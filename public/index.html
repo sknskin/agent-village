@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Village — AI 에이전트 마을</title>
+  <!-- 인라인 CSS only (외부 CSS 파일 없음) / inline CSS only -->
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      color: #fff;
+      font-family: monospace;
+      overflow: hidden;
+    }
+    /* 캔버스가 창을 가득 채우도록 중앙 정렬 / center the canvas filling the window */
+    #wrap {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 100vw;
+      height: 100vh;
+    }
+    /* 픽셀아트 선명하게 / keep pixel art crisp */
+    #game {
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      background: #000;
+    }
+    /* 제목/도움말은 화면 위 오버레이(레이아웃 차지 X) / title & help as non-intrusive overlays */
+    #title {
+      position: fixed;
+      top: 6px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 5;
+      pointer-events: none;
+      font-size: 13px;
+      letter-spacing: 2px;
+      color: #ffd54f;
+      text-shadow: 1px 1px 0 #000;
+      opacity: 0.85;
+    }
+    #help {
+      position: fixed;
+      bottom: 6px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 5;
+      pointer-events: none;
+      font-size: 11px;
+      color: #ddd;
+      background: rgba(0, 0, 0, 0.45);
+      padding: 3px 10px;
+      border-radius: 5px;
+      white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <div id="title">🏰 AGENT VILLAGE</div>
+    <!-- 게임 캔버스 / game canvas -->
+    <canvas id="game"></canvas>
+    <div id="help">WASD/방향키: 이동(대각선 없음) · Enter: 상호작용 · ESC: 뒤로/취소 · T: 타이핑 속도 · 문/출구에 닿으면 자동 전환</div>
+  </div>
+
+  <!-- CLAUDE.md 개발 순서대로 스크립트 로드 / load scripts in spec order -->
+  <script src="sprites.js"></script>
+  <script src="world.js"></script>
+  <script src="player.js"></script>
+  <script src="buildings.js"></script>
+  <script src="interior.js"></script>
+  <script src="ui.js"></script>
+  <script src="editor.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
