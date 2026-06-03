@@ -13,10 +13,12 @@ and delegate real AI tasks to Claude-powered agent NPCs with streaming replies.
 - **Node.js + Express + WebSocket** 백엔드, 응답 스트리밍
 - **로컬 Claude Code CLI(구독 인증) 기본** — API 키 없이 추가 비용 없이 동작 (`AI_MODE=cli`). API 키 모드(`AI_MODE=api`)도 선택 가능
 - 다중 구역(마을/공방/숲/해변/설원/동굴), 게이트 이동, 포켓몬식 나선 화면 전환
-- 빌트인 에이전트 + 맵 이벤트 + 캐릭터 NPC, 배회 이동, 미니맵
+- **테마별 지형지물**: 울창한 숲(나무·버섯·그루터기·연못), 해변(야자·조개·불가사리·유목·조수웅덩이), 설원(침엽수·눈사람·고드름·얼음호수), 그리고 **바위벽을 깎아낸 좁은 굴곡 통로의 동굴**(횃불형 어둠 연출·지하 수맥·수정 군집)
+- 빌트인 에이전트 + 맵 이벤트 + 캐릭터 NPC, 배회 이동(이동 중 걷기 애니메이션), 지형이 보이는 미니맵(현재 구역명 표시)
 - **에이전트 공방**: 내 커스텀 에이전트 생성/편집(이름·역할·모델·색)
 - **에이전트 팀 빌더**: 내가 만든 에이전트들로 팀 구성, 순차/병렬 실행 + 리드 종합
 - 대화창: 타이핑 효과, "생각 중" 회전 문구, 답변 전체 보기 리더(F 키)
+- 접근성: `prefers-reduced-motion` 반영(흔들림/깜빡임 억제)
 
 ## 실행 / Run
 
@@ -26,7 +28,16 @@ node server.js     # http://localhost:47913
 ```
 
 기본 AI 모드는 `cli`로, 로컬에 로그인된 Claude Code CLI를 서브프로세스로 사용합니다(추가 비용 없음).
-설정은 `.env`에서 변경할 수 있습니다(`.env.example` 참고).
+설정은 `.env`에서 변경할 수 있습니다(`.env.example` 참고). 종료는 Ctrl+C(SIGINT)로 안전하게 정리됩니다.
+
+## 테스트 / Test
+
+```bash
+npm test           # Node 내장 테스트 러너(무의존성) / built-in test runner, no deps
+```
+
+- `test/agents.test.js`: 작업 분해(`parsePlan`)·모델/실행 검증 등 순수 함수 회귀
+- `test/world.test.js`: 모든 구역 렌더 무예외 + 게이트·이벤트·표지판 도달성(동굴 미로 포함) 회귀
 
 ## 조작 / Controls
 
