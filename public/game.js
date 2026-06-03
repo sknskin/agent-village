@@ -20,6 +20,11 @@
   const MAX_DT = 0.05; // 델타 타임 상한(초) / clamp delta time
   const RECONNECT_MS = 2000;
 
+  // 접근성: 큰 움직임을 줄이는 사용자 선호를 반영(흔들림/깜빡임 억제)
+  // accessibility: honor the user's reduced-motion preference (suppress bob/blink)
+  const REDUCED_MOTION = (typeof window.matchMedia === 'function') &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
   // 이동 키 매핑 / movement key map
   const MOVE_KEYS = {
     KeyW: 'up', ArrowUp: 'up',
@@ -221,6 +226,14 @@
 
     ws.addEventListener('close', () => {
       game.wsReady = false;
+      // 작업 응답 대기 중 연결이 끊기면 done/error가 영영 안 와 "생각 중"이 고착된다.
+      // 사용자에게 알리고 결과 상태로 전환해 Enter/ESC로 닫을 수 있게 한다.
+      // If the socket drops while awaiting a reply, no done/error arrives and the
+      // "thinking" box would hang forever — surface it and let the user close it.
+      if (game.talking && window.UI.getMode() === window.UI.MODE.WORKING) {
+        window.UI.appendChunk('\n\n⚠ 서버 연결이 끊겼어요. 다시 연결을 시도하는 중이에요…');
+        window.UI.finishWorking();
+      }
       // 재연결 시도 / try to reconnect
       setTimeout(connectWs, RECONNECT_MS);
     });
@@ -305,6 +318,11 @@
 
   // 작업 전송 / send a task
   function sendTask(agentId, task) {
+    // 대화 상대가 없으면 작업을 보내지 않음(currentNpc.name 역참조 방어)
+    // bail out if there is no active dialogue partner (guards the currentNpc.name dereference below)
+    if (!game.currentNpc) {
+      return;
+    }
     if (!game.wsReady || !game.ws) {
       window.UI.startWorking(game.currentNpc.name, game.currentNpc.color);
       window.UI.appendChunk('서버에 연결되어 있지 않습니다. 잠시 후 다시 시도해주세요.');
@@ -724,8 +742,10 @@
 
     if (game.scene === SCENE.WORLD) {
       window.Player.update(dt);
-      // 배회 NPC 이동(대화 중인 NPC는 정지) / wandering NPCs (talked-to NPC stays still)
-      window.World.updateNpcs(dt, (game.talking && game.currentNpc) ? game.currentNpc.id : null);
+      // 배회 NPC 이동(대화 중인 NPC는 정지, 플레이어 칸은 회피) / wandering NPCs (talked-to NPC stays still, avoid the player's tile)
+      const pp = window.Player.state;
+      const playerTile = { tx: Math.floor((pp.x + TILE / 2) / TILE), ty: Math.floor((pp.y + TILE / 2) / TILE) };
+      window.World.updateNpcs(dt, (game.talking && game.currentNpc) ? game.currentNpc.id : null, playerTile);
       // 문에 올라서면 자동 입장, 게이트에 올라서면 구역 이동 / auto-enter doors, travel gates
       checkAutoEnter();
       checkAutoGate();
@@ -800,6 +820,11 @@
       d.draw(ctx);
     }
 
+    // 동굴은 플레이어 주변만 밝은 어둠 비네트(폐쇄·어두움 연출) / cave: torch-like darkness around the player
+    if (window.World.getActiveZone() === 'cave') {
+      drawCaveAmbiance(camera);
+    }
+
     // 건물 이름표(가장 위에) / building name labels on top
     window.World.drawBuildingLabels(ctx, camera);
 
@@ -808,6 +833,20 @@
 
     // 우하단 미니맵 / minimap at bottom-right
     drawMinimap();
+  }
+
+  // === 동굴 분위기(횃불형 어둠 비네트) / cave ambiance (torch-like darkness vignette) ===
+  function drawCaveAmbiance(camera) {
+    const p = window.Player.state;
+    const cx = p.x - camera.x + TILE / 2;
+    const cy = p.y - camera.y + TILE / 2;
+    // 플레이어 주변은 밝고 가장자리로 갈수록 어둡게 / bright around the player, dark toward the edges
+    const grad = ctx.createRadialGradient(cx, cy, 40, cx, cy, 230);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(0.55, 'rgba(0,0,0,0.18)');
+    grad.addColorStop(1, 'rgba(2,4,8,0.8)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, W, H);
   }
 
   // === 미니맵 / minimap ===
@@ -833,6 +872,19 @@
     const scaleX = mw / worldW;
     const scaleY = mh / worldH;
 
+    // 보행 가능 영역(지형) — 좁은 동굴 미로 등에서 길찾기에 도움 / walkable terrain layer (helps navigate the cave maze)
+    const WALL = window.World.WALL;
+    const cellW = Math.max(1, TILE * scaleX);
+    const cellH = Math.max(1, TILE * scaleY);
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    for (let ty = 0; ty < window.World.WORLD_H; ty++) {
+      for (let tx = 0; tx < window.World.WORLD_W; tx++) {
+        if (window.World.collisionAt(tx, ty) !== WALL) {
+          ctx.fillRect(mx + tx * TILE * scaleX, my + ty * TILE * scaleY, cellW, cellH);
+        }
+      }
+    }
+
     // 건물(에이전트 색) / buildings colored by their agent
     for (const b of window.World.buildings) {
       const meta = window.AGENT_META[b.agentIds[0]];
@@ -843,6 +895,23 @@
         Math.max(2, b.w * TILE * scaleX),
         Math.max(2, b.h * TILE * scaleY)
       );
+    }
+
+    // 구역 이동 게이트(보라색 점) / zone-travel gates (purple dots)
+    ctx.fillStyle = '#B39DDB';
+    for (const g of window.World.gates) {
+      ctx.fillRect(mx + g.tx * TILE * scaleX - 1, my + g.ty * TILE * scaleY - 1, 2, 2);
+    }
+
+    // NPC/이벤트 점 — NPC는 흰색, ✦이벤트는 노란색 / NPC & event dots (npc=white, event=amber)
+    for (const o of window.World.objects) {
+      if (o.type !== 'event') {
+        continue;
+      }
+      const ox = (o.px != null ? o.px : o.tx * TILE);
+      const oy = (o.py != null ? o.py : o.ty * TILE);
+      ctx.fillStyle = (o.kind === 'npc') ? '#FFFFFF' : '#FFD54F';
+      ctx.fillRect(mx + ox * scaleX - 1, my + oy * scaleY - 1, 2, 2);
     }
 
     // 현재 카메라 시야 영역 / current camera viewport
@@ -859,13 +928,27 @@
     const p = window.Player.state;
     ctx.fillStyle = '#FFEB3B';
     ctx.fillRect(mx + (p.x + 8) * scaleX - 1, my + (p.y + 8) * scaleY - 1, 3, 3);
+
+    // 현재 구역 이름(미니맵 위, 상시) — 배너는 사라지므로 위치 파악 보강
+    // current zone name above the minimap (persistent) — the banner fades, this stays
+    const zoneName = ZONE_NAMES[window.World.getActiveZone()] || '';
+    if (zoneName) {
+      ctx.font = 'bold 8px "Apple SD Gothic Neo", "Malgun Gothic", "Noto Sans KR", sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      const tw = ctx.measureText(zoneName).width;
+      ctx.fillRect(mx + mw - tw - 4, my - 12, tw + 4, 11);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillText(zoneName, mx + mw - 2, my - 4);
+      ctx.textAlign = 'left';
+    }
   }
 
   // === 상호작용 프롬프트 / interaction prompt ===
 
   // 대상 위에 "Enter" 말풍선(살짝 위아래로) / a bobbing "Enter" pill above the target
   function drawPromptAt(cx, topY) {
-    const bob = Math.round(Math.sin(game.frame * 0.15) * 2);
+    const bob = REDUCED_MOTION ? 0 : Math.round(Math.sin(game.frame * 0.15) * 2);
     const y = topY - 14 + bob;
     ctx.font = 'bold 8px "Apple SD Gothic Neo", "Malgun Gothic", sans-serif';
     ctx.textAlign = 'center';
@@ -884,7 +967,6 @@
       return;
     }
     const front = window.Player.getFrontPx();
-    const p = window.Player.state;
     let tx = null;
     let ty = null;
     if (window.World.signAt(front.x, front.y)) {
@@ -893,13 +975,12 @@
     } else {
       const ev = window.World.eventAt(front.x, front.y);
       const building = window.Buildings.getEnterable();
-      const gate = window.World.gateAtPx(front.x, front.y) || window.World.gateAtPx(p.x + TILE / 2, p.y + TILE / 2);
+      // 게이트는 밟으면 자동 이동(Enter 무동작)이라 프롬프트를 띄우지 않음 — 발광 펄스로 안내
+      // gates auto-transition on step (Enter does nothing), so no prompt here — the glow pulse signals them
       if (ev) {
         tx = ev.tx; ty = ev.ty;
       } else if (building) {
         tx = building.door.tx; ty = building.door.ty;
-      } else if (gate) {
-        tx = gate.tx; ty = gate.ty;
       }
     }
     if (tx === null) {
@@ -920,8 +1001,24 @@
   }
 
   // === 타이틀 화면 / title screen ===
+
+  // HTML 오버레이(제목/도움말) 표시 토글 — 타이틀 씬에선 캔버스가 직접 그리므로 숨김
+  // toggle the HTML title/help overlays; hidden on the title scene (canvas draws its own)
+  function setOverlaysVisible(visible) {
+    const display = visible ? '' : 'none';
+    const titleEl = document.getElementById('title');
+    const helpEl = document.getElementById('help');
+    if (titleEl) {
+      titleEl.style.display = display;
+    }
+    if (helpEl) {
+      helpEl.style.display = display;
+    }
+  }
+
   function startGame() {
     game.scene = SCENE.WORLD;
+    setOverlaysVisible(true); // 게임 시작 → 오버레이 표시 / show overlays once playing
     showBanner(ZONE_NAMES.village); // 시작 시 마을 배너 / village banner on start
   }
 
@@ -954,12 +1051,18 @@
     ctx.fillText('WASD/방향키: 이동  ·  Enter: 상호작용  ·  ESC: 뒤로  ·  T: 타이핑 속도', W / 2, 206);
     ctx.fillText('문·게이트·NPC·✦이벤트에 다가가 Enter 로 상호작용', W / 2, 220);
 
-    // 시작 프롬프트(깜빡) / blinking start prompt
-    if (Math.floor(game.frame / 30) % 2 === 0) {
+    // 시작 프롬프트(깜빡, reduced-motion이면 항상 표시) / blinking start prompt (steady when reduced-motion)
+    if (REDUCED_MOTION || Math.floor(game.frame / 30) % 2 === 0) {
       ctx.fillStyle = '#FFEB3B';
       ctx.font = 'bold 13px ' + TITLE_FONT;
       ctx.fillText('▶  Enter 로 시작  ◀', W / 2, 256);
     }
+
+    // 서버 연결 상태 / server connection status
+    ctx.font = '8px ' + TITLE_FONT;
+    ctx.fillStyle = game.wsReady ? '#81C784' : '#FFB74D';
+    ctx.fillText(game.wsReady ? '● 서버 연결됨' : '○ 서버 연결 중…', W / 2, 286);
+
     ctx.textAlign = 'left';
   }
 
@@ -1000,7 +1103,9 @@
 
   // === 메인 루프 / main loop ===
   function loop(timestamp) {
-    const dt = Math.min(MAX_DT, (timestamp - game.lastTime) / 1000 || 0);
+    // dt를 0 이상으로 클램프 — 시계 역행/탭 복귀 등으로 음수가 되면 타이머가 거꾸로 가는 것을 방지
+    // clamp dt to >= 0 — guards against negative dt (clock skew / tab resume) running timers backwards
+    const dt = Math.max(0, Math.min(MAX_DT, (timestamp - game.lastTime) / 1000 || 0));
     game.lastTime = timestamp;
     // 한 프레임에서 예외가 나도 루프가 죽지 않도록(화면 멈춤 방지)
     // keep the loop alive even if a single frame throws (prevents a frozen screen)
@@ -1016,6 +1121,7 @@
   // === 시작 / start ===
   function start() {
     setupCanvas();
+    setOverlaysVisible(false); // 타이틀 화면 동안 HTML 오버레이 숨김 / hide overlays during the title screen
     window.Player.reset();
     connectWs();
     window.addEventListener('keydown', onKeyDown);
