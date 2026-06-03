@@ -4,6 +4,8 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Agent Village — AI 에이전트 마을</title>
+  <!-- 인라인 favicon(별도 요청 없이 404 방지) / inline favicon to avoid a 404 request -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%237CB342'/%3E%3Crect x='5' y='3' width='6' height='7' fill='%23FFCC80'/%3E%3Crect x='4' y='2' width='8' height='2' fill='%235D4037'/%3E%3C/svg%3E" />
   <!-- 인라인 CSS only (외부 CSS 파일 없음) / inline CSS only -->
   <style>
     html, body {
@@ -65,8 +67,12 @@
   <div id="wrap">
     <div id="title">🏰 AGENT VILLAGE</div>
     <!-- 게임 캔버스 / game canvas -->
-    <canvas id="game"></canvas>
-    <div id="help">WASD/방향키: 이동(대각선 없음) · Enter: 상호작용 · ESC: 뒤로/취소 · T: 타이핑 속도 · 문/출구에 닿으면 자동 전환</div>
+    <canvas id="game" role="application"
+      aria-label="Agent Village — 탑뷰 2D RPG. WASD 또는 방향키로 이동, Enter로 상호작용, ESC로 뒤로/취소.">
+      이 게임은 HTML5 Canvas로 동작합니다. WASD/방향키로 이동하고 Enter로 NPC·에이전트와 상호작용하세요.
+      (This game runs on an HTML5 Canvas; move with WASD/arrows and press Enter to interact.)
+    </canvas>
+    <div id="help">WASD/방향키: 이동 · Enter: 상호작용 · ESC: 뒤로/취소 · T: 타이핑 속도 · F: 답변 전체보기 · 문·게이트에 닿으면 자동 이동 · 우하단 미니맵</div>
   </div>
 
   <!-- CLAUDE.md 개발 순서대로 스크립트 로드 / load scripts in spec order -->
@@ -75,6 +81,7 @@
   <script src="player.js"></script>
   <script src="buildings.js"></script>
   <script src="interior.js"></script>
+  <script src="uiutil.js"></script>
   <script src="ui.js"></script>
   <script src="editor.js"></script>
   <script src="game.js"></script>
