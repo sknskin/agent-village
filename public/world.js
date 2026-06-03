@@ -107,6 +107,29 @@
     }
   }
 
+  // 전체를 통과 불가 벽으로 채운다(동굴 등 폐쇄형 맵의 기반) / fill everything as solid wall
+  function fillSolid(tileType) {
+    for (let ty = 0; ty < WORLD_H; ty++) {
+      for (let tx = 0; tx < WORLD_W; tx++) {
+        ground[ty][tx] = tileType;
+        collision[ty][tx] = WALL;
+      }
+    }
+  }
+
+  // 사각 영역을 통로 바닥으로 깎아낸다(벽을 비움) / carve a rectangular walkable area out of wall
+  function carveFloor(tx, ty, w, h, tileType) {
+    const t0 = tileType || 'cave_floor';
+    for (let y = ty; y < ty + h; y++) {
+      for (let x = tx; x < tx + w; x++) {
+        if (inBounds(x, y)) {
+          ground[y][x] = t0;
+          collision[y][x] = PASS;
+        }
+      }
+    }
+  }
+
   function markRect(tx, ty, w, h, code) {
     for (let y = ty; y < ty + h; y++) {
       for (let x = tx; x < tx + w; x++) {
@@ -234,10 +257,13 @@
     addProp('well', 27, 16);
     addProp('rock', 12, 6); addProp('rock', 28, 6); addProp('rock', 30, 25);
     addProp('bush', 14, 22); addProp('bush', 26, 23); addProp('bush', 11, 16);
+    // 마을 곳곳 자연물 보강 / a touch more greenery around the village
+    addProp('bush', 13, 24); addProp('bush', 27, 24); addProp('stump', 33, 6); addProp('bush', 6, 25);
+    scatterFlowers([[13, 21], [26, 21], [12, 11], [27, 9], [10, 24], [29, 23], [16, 9], [23, 23]]);
     // 마을 게시판(상호작용) / interactive bulletin board
     addProp('bulletin', 25, 14, {
       title: '마을 게시판',
-      text: 'AgentVillage에 오신 걸 환영해요!\n\n· WASD/방향키로 이동 (Enter: 상호작용)\n· 건물 문·구역 게이트에 닿으면 자동 입장\n· NPC 앞에서 Enter로 대화하고 작업을 의뢰하세요\n· 남쪽 게이트로 가면 「에이전트 공방」에서\n  나만의 AI 에이전트를 만들 수 있어요.'
+      text: 'AgentVillage에 오신 걸 환영해요!\n\n· WASD/방향키로 이동 (Enter: 상호작용)\n· 건물 문·구역 게이트에 닿으면 자동 입장\n· NPC 앞에서 Enter로 대화하고 작업을 의뢰하세요\n· ✦ 표시가 있는 곳엔 특별한 AI 이벤트가 있어요\n· 남쪽 게이트로 가면 「에이전트 공방」에서\n  나만의 AI 에이전트를 만들 수 있어요.'
     });
     // 게이트 표지판(상호작용) / gate signpost
     addProp('sign', 22, 26, { title: '표지판', text: '사방 게이트로 다른 구역에 갈 수 있어요:\n남↓ 공방 · 동→ 숲 · 서← 해변 · 북↑ 설원' });
@@ -300,6 +326,9 @@
     addProp('lamp', 14, 16); addProp('lamp', 25, 16);
     addProp('bush', 13, 20); addProp('bush', 26, 20);
     addProp('rock', 12, 13); addProp('rock', 27, 13);
+    // 공방 앞뜰 자연물 보강 / a bit more greenery in the workshop yard
+    addProp('stump', 11, 19); addProp('bush', 28, 13); addProp('bush', 10, 13);
+    scatterFlowers([[12, 19], [27, 19], [13, 13], [26, 13]]);
     // 공방 안내 표지판(상호작용) / workshop info sign
     addProp('sign', 25, 20, {
       title: '에이전트 공방',
@@ -320,19 +349,37 @@
     paintHPath(8, 20, 14, 2, 'dirt');
     paintHPath(20, 32, 16, 2, 'dirt');
 
-    const trees = [[5, 5], [8, 7], [12, 5], [31, 6], [34, 8], [6, 21], [10, 24], [33, 22], [28, 25], [14, 9], [26, 9], [16, 23], [24, 23], [7, 12], [33, 13]];
+    // 울창한 숲: 나무를 빽빽하게 / a dense, lush forest
+    const trees = [
+      [5, 5], [8, 7], [12, 5], [31, 6], [34, 8], [6, 21], [10, 24], [33, 22], [28, 25], [14, 9],
+      [26, 9], [16, 23], [24, 23], [7, 12], [33, 13],
+      // 추가 군락 / extra clusters
+      [4, 8], [9, 4], [13, 11], [3, 14], [6, 9], [35, 5], [32, 10], [36, 12], [34, 19], [31, 24],
+      [4, 18], [8, 22], [11, 21], [3, 24], [25, 5], [29, 4], [22, 25], [13, 26], [27, 22], [36, 25]
+    ];
     for (const [x, y] of trees) {
       maybeTree(x, y);
     }
-    const pines = [[10, 9], [28, 8], [6, 17], [33, 17], [12, 25], [27, 25], [16, 6], [24, 6]];
+    const pines = [
+      [10, 9], [28, 8], [6, 17], [33, 17], [12, 25], [27, 25], [16, 6], [24, 6],
+      // 추가 침엽수 / extra conifers
+      [8, 11], [31, 12], [5, 13], [34, 15], [11, 6], [29, 10], [7, 26], [32, 26]
+    ];
     for (const [x, y] of pines) {
       addProp('pine', x, y);
     }
-    const shrooms = [[14, 17], [24, 16], [9, 19], [30, 19], [17, 25], [23, 25]];
+    const shrooms = [[14, 17], [24, 16], [9, 19], [30, 19], [17, 25], [23, 25], [13, 18], [26, 18], [10, 16], [31, 21]];
     for (const [x, y] of shrooms) {
       addProp('mushroom', x, y, { solid: false });
     }
+    // 그루터기(베인 나무 흔적) / tree stumps
+    addProp('stump', 12, 12); addProp('stump', 27, 11); addProp('stump', 9, 23);
+    // 이끼 낀 바위·덤불 / mossy rocks & bushes
     addProp('rock', 11, 12); addProp('rock', 29, 12); addProp('bush', 15, 19); addProp('bush', 25, 19);
+    addProp('rock', 6, 6); addProp('rock', 34, 11); addProp('bush', 5, 22); addProp('bush', 33, 24); addProp('bush', 18, 11);
+    // 숲 속 작은 연못 / a small forest pond
+    paintRect(4, 10, 3, 2, 'water');
+    markRect(4, 10, 3, 2, WALL);
     plantBorderTrees([]);
 
     addProp('sign', 22, 24, { title: '숲', text: '울창한 숲 구역.\n남쪽 ↓ 마을, 북쪽 ↑ 동굴로 이어집니다.\n빛나는 나무(✦)에게 말을 걸어보세요.' });
@@ -364,16 +411,28 @@
     paintVPath(20, 4, 28, 2, 'path');
     paintHPath(8, 28, 16, 2, 'path');
 
-    const palms = [[6, 6], [12, 8], [24, 7], [10, 20], [22, 22], [14, 24], [8, 12]];
+    const palms = [
+      [6, 6], [12, 8], [24, 7], [10, 20], [22, 22], [14, 24], [8, 12],
+      // 추가 야자수 / extra palms
+      [4, 9], [16, 6], [27, 22], [5, 18], [11, 4], [25, 25], [3, 23]
+    ];
     for (const [x, y] of palms) {
       addProp('palm', x, y);
     }
-    const shells = [[16, 18], [24, 18], [12, 22], [26, 20], [18, 24]];
+    const shells = [[16, 18], [24, 18], [12, 22], [26, 20], [18, 24], [9, 23], [21, 19], [15, 21], [7, 15]];
     for (const [x, y] of shells) {
       addProp('shell', x, y, { solid: false });
     }
-    addProp('rock', 28, 10); addProp('rock', 28, 24);
+    // 불가사리(모래 위, 평면 장식) / starfish scattered on the sand
+    addProp('starfish', 13, 19, { solid: false }); addProp('starfish', 19, 23, { solid: false });
+    addProp('starfish', 25, 18, { solid: false }); addProp('starfish', 10, 12, { solid: false });
+    // 유목(파도에 밀려온 통나무) / driftwood washed ashore
+    addProp('driftwood', 17, 20); addProp('driftwood', 8, 18); addProp('driftwood', 23, 24);
+    addProp('rock', 28, 10); addProp('rock', 28, 24); addProp('rock', 6, 21); addProp('rock', 19, 7);
     addProp('lighthouse', 26, 8);
+    // 조수 웅덩이(모래밭의 작은 물웅덩이) / a tide pool on the sand
+    paintRect(5, 11, 2, 2, 'water');
+    markRect(5, 11, 2, 2, WALL);
 
     addProp('sign', 22, 24, { title: '해변', text: '파도가 치는 해변 구역.\n동쪽은 바다예요. 남쪽 ↓ 마을로.\n유리병(✦)을 열어보세요.' });
     // 이벤트: 유리병 편지(즉시 생성) / event: message in a bottle (auto)
@@ -394,21 +453,34 @@
   function buildSnowfield() {
     resetZone();
     fillGround('snow');
-    // 얼음 호수 / frozen pond
+    // 얼음 호수(큰 것) / frozen lake (large)
     for (let y = 18; y < 24; y++) {
       for (let x = 24; x < 32; x++) {
+        ground[y][x] = 'ice';
+      }
+    }
+    // 작은 두 번째 얼음 연못 / a smaller second frozen pond
+    for (let y = 9; y < 12; y++) {
+      for (let x = 5; x < 9; x++) {
         ground[y][x] = 'ice';
       }
     }
     paintVPath(20, 4, 28, 2, 'path');
     paintHPath(8, 20, 14, 2, 'path');
 
-    const pines = [[5, 5], [9, 7], [13, 5], [28, 6], [33, 8], [6, 22], [11, 25], [34, 22], [16, 9], [24, 9], [7, 14], [33, 14]];
+    const pines = [
+      [5, 5], [9, 7], [13, 5], [28, 6], [33, 8], [6, 22], [11, 25], [34, 22], [16, 9], [24, 9], [7, 14], [33, 14],
+      // 빽빽한 침엽수림 / a denser conifer stand
+      [4, 8], [11, 8], [15, 6], [26, 5], [31, 11], [35, 12], [3, 17], [9, 23], [13, 23], [30, 24],
+      [36, 18], [26, 11], [17, 25], [23, 7]
+    ];
     for (const [x, y] of pines) {
       addProp('pine', x, y);
     }
-    addProp('snowman', 14, 18); addProp('snowman', 22, 25);
-    addProp('rock', 12, 12); addProp('rock', 27, 12);
+    addProp('snowman', 14, 18); addProp('snowman', 22, 25); addProp('snowman', 10, 12);
+    // 고드름/얼음 기둥 / icicle spikes
+    addProp('icicle', 8, 16); addProp('icicle', 30, 14); addProp('icicle', 17, 12); addProp('icicle', 12, 22); addProp('icicle', 33, 20);
+    addProp('rock', 12, 12); addProp('rock', 27, 12); addProp('rock', 6, 17); addProp('rock', 32, 16);
 
     addProp('sign', 22, 24, { title: '설원', text: '눈 덮인 설원 구역.\n가운데 얼음 호수가 있어요. 남쪽 ↓ 마을로.\n말하는 눈사람(✦)과 수다 떨어보세요.' });
     // 이벤트: 말하는 눈사람 / event: talking snowman
@@ -422,32 +494,46 @@
   }
 
   // === 동굴 구역 / cave ===
+  // 열린 벌판이 아니라, 바위벽 속을 좁은 통로와 방으로 깎아낸 진짜 동굴 구조.
+  // Not an open field: solid rock filled, then carved into narrow corridors and chambers.
   function buildCave() {
     resetZone();
-    fillGround('cave_floor');
-    // 가장자리 바위 벽(시각용, 경계는 월드 밖이 막음) / decorative rock ring
-    for (let x = 2; x < WORLD_W - 2; x += 2) {
-      addProp('rock', x, 1, { solid: false });
-      addProp('rock', x, WORLD_H - 2, { solid: false });
-    }
-    for (let y = 2; y < WORLD_H - 2; y += 2) {
-      addProp('rock', 1, y, { solid: false });
-      addProp('rock', WORLD_W - 2, y, { solid: false });
-    }
-    const crystals = [[8, 8], [30, 9], [12, 22], [28, 23], [16, 6], [24, 25]];
-    for (const [x, y] of crystals) {
-      addProp('crystal', x, y);
-    }
-    const stals = [[10, 14], [28, 14], [14, 10], [26, 20], [18, 22]];
-    for (const [x, y] of stals) {
-      addProp('stalagmite', x, y);
-    }
-    addProp('rock', 13, 16); addProp('rock', 27, 16);
+    // 1) 전체를 바위벽으로 / fill everything with rock wall
+    fillSolid('cave_wall');
 
-    addProp('sign', 22, 24, { title: '동굴', text: '어두운 수정 동굴.\n남쪽 ↓ 숲으로 돌아갑니다.\n빛나는 수정(✦)에게 물어보세요.' });
+    // 2) 좁은 통로/방 깎아내기 (서로 연결되도록 설계) / carve connected corridors & rooms
+    carveFloor(19, 12, 2, 17);   // 입구 세로 본통로(남쪽 게이트→안쪽) / entrance vertical corridor
+    carveFloor(20, 23, 4, 3);    // 표지판 가지 / sign branch (reaches 22,24)
+    carveFloor(9, 15, 23, 2);    // 가운데 가로 통로 / central horizontal corridor
+    carveFloor(13, 12, 7, 7);    // 오라클 방 / oracle chamber (16,16)
+    carveFloor(22, 13, 7, 6);    // 광부 곁방 / miner alcove (24,16)
+    carveFloor(10, 16, 4, 8);    // 보물 가지 통로+방 / treasure branch & room (12,20)
+    carveFloor(6, 20, 5, 3);     // 보물 방 왼쪽 막다른 길 / treasure-side dead end
+    carveFloor(27, 8, 2, 8);     // 동쪽 수정 가지 / east crystal spur
+    carveFloor(26, 7, 5, 4);     // 동쪽 수정 방 / east crystal chamber
+    carveFloor(18, 8, 2, 5);     // 위쪽 연결 통로 / upper connector
+    carveFloor(15, 8, 6, 4);     // 위쪽 작은 방 / upper chamber
+
+    // 3) 지하 수맥(작은 웅덩이, 통과 불가) / underground water pool (decorative, blocks)
+    paintRect(7, 21, 2, 2, 'water');
+    markRect(7, 21, 2, 2, WALL);
+    paintRect(28, 8, 2, 2, 'water');
+    markRect(28, 8, 2, 2, WALL);
+
+    // 4) 수정 군집(빛나는 분위기) — 방 가장자리, 통로는 비충돌로 / crystal clusters
+    addProp('crystal', 14, 13); addProp('crystal', 18, 17); addProp('crystal', 28, 7);
+    addProp('crystal', 30, 9); addProp('crystal', 6, 22); addProp('crystal', 16, 9);
+    addProp('crystal', 13, 17, { solid: false }); addProp('crystal', 27, 15, { solid: false });
+    // 석순(바닥에서 솟음) — 방 안 장애물 / stalagmites as in-room obstacles
+    addProp('stalagmite', 23, 17); addProp('stalagmite', 17, 12); addProp('stalagmite', 11, 22);
+    addProp('stalagmite', 20, 9, { solid: false });
+    // 흩어진 바위 / scattered rocks
+    addProp('rock', 25, 14, { solid: false }); addProp('rock', 15, 17, { solid: false });
+
+    addProp('sign', 21, 24, { title: '동굴', text: '좁고 어두운 수정 동굴.\n갈래길을 따라 안쪽으로 들어가 보세요.\n남쪽 ↓ 숲으로 돌아갑니다.\n빛나는 수정(✦)에게 물어보세요.' });
     // 이벤트: 수정 오라클 / event: crystal oracle
     addEvent({ agentId: 'crystal_oracle', name: '수정 오라클', color: '#80DEEA', mode: 'input', sprite: 'crystal', tx: 16, ty: 16 });
-    // NPC: 광부(정지) + 보물사냥꾼(배회) / miner (still) + treasure hunter (wanders)
+    // NPC: 광부 + 보물사냥꾼(둘 다 통로 배회) / miner & treasure hunter (both wander the corridors)
     addEvent({ agentId: 'cave_miner', name: '광부', color: '#8D6E63', mode: 'input', kind: 'npc', sprite: 'human', tx: 24, ty: 16, wander: true });
     addEvent({ agentId: 'treasure_hunter', name: '보물사냥꾼', color: '#FFB300', mode: 'input', kind: 'npc', sprite: 'human', tx: 12, ty: 20, wander: true });
 
@@ -582,8 +668,10 @@
     return null;
   }
 
-  // 배회 NPC 갱신(대화 중인 NPC는 정지) / update wandering NPCs (the one being talked to stays still)
-  function updateNpcs(dt, frozenAgentId) {
+  // 배회 NPC 갱신(대화 중인 NPC는 정지, 플레이어 칸은 피함)
+  // update wandering NPCs (the talked-to NPC stays still; NPCs avoid stepping onto the player's tile)
+  // playerTile: { tx, ty } 플레이어가 선 칸(없으면 회피 안 함) / the tile the player stands on (optional)
+  function updateNpcs(dt, frozenAgentId, playerTile) {
     for (const o of objects) {
       if (o.type !== 'event' || !o.wander) {
         continue;
@@ -621,6 +709,13 @@
       const next = o.path[0];
       if (!inBounds(next[0], next[1]) || collision[next[1]][next[0]] !== PASS) {
         o.path = null; // 길이 막힘 → 재탐색 / blocked, re-path
+        o.rest = 0.3;
+        continue;
+      }
+      // 플레이어가 선 칸으로는 들어가지 않음(겹침 방지) → 잠시 쉬고 재탐색
+      // never step onto the player's tile (prevents overlap) → rest briefly and re-path
+      if (playerTile && next[0] === playerTile.tx && next[1] === playerTile.ty) {
+        o.path = null;
         o.rest = 0.3;
         continue;
       }
@@ -710,7 +805,8 @@
     const endTy = Math.min(WORLD_H, Math.ceil((camera.y + window.CONFIG.LOGICAL_H) / TILE));
     for (let ty = startTy; ty < endTy; ty++) {
       for (let tx = startTx; tx < endTx; tx++) {
-        window.Sprites.drawTile(ctx, ground[ty][tx], tx * TILE - camera.x, ty * TILE - camera.y);
+        // animTick을 넘겨 물/얼음이 찰랑이도록 / pass animTick so water & ice animate
+        window.Sprites.drawTile(ctx, ground[ty][tx], tx * TILE - camera.x, ty * TILE - camera.y, animTick);
       }
     }
   }
@@ -730,6 +826,10 @@
         window.Sprites.drawMushroom(ctx, sx, sy);
       } else if (o.type === 'shell') {
         window.Sprites.drawShell(ctx, sx, sy);
+      } else if (o.type === 'driftwood') {
+        window.Sprites.drawDriftwood(ctx, sx, sy);
+      } else if (o.type === 'starfish') {
+        window.Sprites.drawStarfish(ctx, sx, sy);
       }
     }
     for (const g of gates) {
@@ -838,6 +938,10 @@
         list.push({ baseY: (o.ty + 1) * TILE, draw: (ctx) => window.Sprites.drawCrystal(ctx, sx, sy) });
       } else if (o.type === 'stalagmite') {
         list.push({ baseY: (o.ty + 1) * TILE, draw: (ctx) => window.Sprites.drawStalagmite(ctx, sx, sy) });
+      } else if (o.type === 'stump') {
+        list.push({ baseY: (o.ty + 1) * TILE, draw: (ctx) => { window.Sprites.drawShadow(ctx, sx, sy); window.Sprites.drawStump(ctx, sx, sy); } });
+      } else if (o.type === 'icicle') {
+        list.push({ baseY: (o.ty + 1) * TILE, draw: (ctx) => window.Sprites.drawIcicle(ctx, sx, sy) });
       } else if (o.type === 'lighthouse') {
         list.push({ baseY: (o.ty + 1) * TILE, draw: (ctx) => window.Sprites.drawLighthouse(ctx, sx, sy) });
       } else if (o.type === 'event') {
@@ -855,6 +959,8 @@
   function drawEventSprite(ctx, ev, sx, sy) {
     const S = window.Sprites;
     S.drawShadow(ctx, sx, sy);
+    // 배회 NPC는 이동 중에만 다리 애니메이션 / wandering NPCs animate legs only while moving
+    const moving = !!ev.moving;
     if (ev.sprite === 'spirit_tree') {
       S.drawSpiritTree(ctx, sx, sy);
     } else if (ev.sprite === 'bottle') {
@@ -864,15 +970,15 @@
     } else if (ev.sprite === 'crystal') {
       S.drawCrystal(ctx, sx, sy);
     } else if (ev.sprite === 'human') {
-      S.drawNPC(ctx, ev.agentId, sx, sy, animTick, 'idle', ev.color);
+      S.drawNPC(ctx, ev.agentId, sx, sy, animTick, 'idle', ev.color, moving);
     } else if (ev.sprite === 'cat') {
-      S.drawCat(ctx, sx, sy, animTick, ev.color);
+      S.drawCat(ctx, sx, sy, animTick, ev.color, moving);
     } else if (ev.sprite === 'penguin') {
-      S.drawPenguin(ctx, sx, sy, animTick);
+      S.drawPenguin(ctx, sx, sy, animTick, moving);
     } else if (ev.sprite === 'dog') {
-      S.drawDog(ctx, sx, sy, animTick, ev.color);
+      S.drawDog(ctx, sx, sy, animTick, ev.color, moving);
     } else if (ev.sprite === 'rabbit') {
-      S.drawRabbit(ctx, sx, sy, animTick, ev.color);
+      S.drawRabbit(ctx, sx, sy, animTick, ev.color, moving);
     } else if (ev.sprite === 'well') {
       S.drawWell(ctx, sx, sy);
     } else if (ev.sprite === 'mushroom') {
@@ -885,7 +991,16 @@
     const tx = Math.floor(px / TILE);
     const ty = Math.floor(py / TILE);
     for (const o of objects) {
-      if (o.type === 'event' && o.tx === tx && o.ty === ty) {
+      if (o.type !== 'event') {
+        continue;
+      }
+      // 목적지 타일(tx/ty) 일치 / match the destination tile
+      if (o.tx === tx && o.ty === ty) {
+        return o;
+      }
+      // 배회 NPC는 이동 중 화면 위치(px/py)와 목적지 타일이 어긋나므로, 보이는 위치도 함께 인정
+      // wandering NPCs drift between tiles mid-move, so also accept the visible interpolated tile
+      if (o.px != null && Math.round(o.px / TILE) === tx && Math.round(o.py / TILE) === ty) {
         return o;
       }
     }
@@ -911,8 +1026,11 @@
     TILE,
     WORLD_W,
     WORLD_H,
+    WALL, // 충돌 코드(미니맵 지형 레이어용) / collision code exported for the minimap terrain layer
     SPAWN,
     buildings,
+    gates, // 미니맵 표시용(제자리 갱신 참조) / exported for the minimap (mutated-in-place ref)
+    objects, // 미니맵 표시용(NPC/이벤트) / exported for the minimap (NPCs/events)
     loadZone,
     getActiveZone,
     groundAt,
