@@ -30,6 +30,11 @@ const {
 
 // === 상수 / Constants ===
 const PORT = Number(process.env.PORT) || 3000;
+// 바인딩 호스트 — 로컬 단일사용자 게임이라 기본 루프백, LAN 노출은 HOST=0.0.0.0로 명시적 옵트인
+// bind host — loopback by default for a local single-user game; opt into LAN via HOST=0.0.0.0
+const HOST = process.env.HOST || '127.0.0.1';
+// 인바운드 WS 프레임 최대 크기(과대 입력 방지) / max inbound WS frame size (guards oversized input)
+const WS_MAX_PAYLOAD = 64 * 1024;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 // === Express 앱 / Express app ===
@@ -44,7 +49,31 @@ app.get('/api/agents', (req, res) => {
 const server = http.createServer(app);
 
 // === WebSocket 서버 / WebSocket server ===
-const wss = new WebSocketServer({ server });
+// Origin 검증으로 악성 웹페이지의 교차 출처 WS 하이재킹(CSWSH) 차단
+// validate Origin to block cross-site WebSocket hijacking (CSWSH) from a malicious page
+const wss = new WebSocketServer({
+  server,
+  maxPayload: WS_MAX_PAYLOAD,
+  verifyClient: ({ origin, req }) => {
+    // 비브라우저 클라이언트(테스트 등)는 Origin이 없음 → 허용
+    // non-browser clients (tests, etc.) send no Origin → allow
+    if (!origin) {
+      return true;
+    }
+    try {
+      const host = new URL(origin).hostname;
+      // 루프백이거나, 게임을 서빙한 바로 그 호스트(동일 출처, LAN 포함)에서 온 연결만 허용
+      // allow only loopback, or the same host that served the game (same-origin, incl. LAN)
+      if (host === 'localhost' || host === '127.0.0.1') {
+        return true;
+      }
+      return origin === 'http://' + req.headers.host || origin === 'https://' + req.headers.host;
+    } catch (err) {
+      // Origin 파싱 실패 시 거부 / reject when the Origin cannot be parsed
+      return false;
+    }
+  }
+});
 
 // 안전하게 JSON 메시지를 전송한다 / safely send a JSON message
 function sendJson(socket, payload) {
@@ -69,14 +98,19 @@ function handleAgentMutation(socket, mutate) {
   }
 }
 
+// 최신 팀 목록을 전송한다 / send the current team list
+function sendTeamList(socket) {
+  sendJson(socket, {
+    type: 'team_list', teams: listTeams(), colors: CUSTOM_COLORS,
+    models: SELECTABLE_MODELS, executions: TEAM_EXECUTIONS, maxMembers: MAX_TEAM_MEMBERS
+  });
+}
+
 // 팀 변경 처리(성공 시 최신 팀 목록 회신, 실패 시 오류) / run a team mutation and reply
 function handleTeamMutation(socket, mutate) {
   try {
     mutate();
-    sendJson(socket, {
-      type: 'team_list', teams: listTeams(), colors: CUSTOM_COLORS,
-      models: SELECTABLE_MODELS, executions: TEAM_EXECUTIONS, maxMembers: MAX_TEAM_MEMBERS
-    });
+    sendTeamList(socket);
   } catch (err) {
     sendJson(socket, { type: 'error', message: err.message });
   }
@@ -136,10 +170,16 @@ wss.on('connection', (socket) => {
         name: msg.name, role: msg.role, color: msg.color, model: msg.model
       }));
     } else if (msg.type === 'delete_agent') {
+      let deleted = false;
       handleAgentMutation(socket, () => {
         deleteCustomAgent(msg.id);
-        return null;
+        deleted = true;
       });
+      // 에이전트 삭제는 팀 구성에 영향을 줄 수 있어 팀 목록도 갱신(성공 시에만)
+      // agent deletion can cascade to teams, so refresh the team list on success
+      if (deleted) {
+        sendTeamList(socket);
+      }
     } else if (msg.type === 'list_teams') {
       // 팀 목록 + 색상/모델/실행 옵션 / team list + colors/models/execution options
       sendJson(socket, {
@@ -188,8 +228,34 @@ server.on('error', (err) => {
   process.exit(1);
 });
 
-server.listen(PORT, () => {
-  console.log('Server running on :' + PORT);
+server.listen(PORT, HOST, () => {
+  console.log('Server running on ' + HOST + ':' + PORT);
   console.log('AI 모드 / AI mode: ' + AI_MODE + (AI_MODE === 'cli' ? ' (구독 인증, 추가비용 없음)' : ' (API 키)'));
   console.log('게임 접속 / open: http://localhost:' + PORT);
 });
+
+// 종료 신호 시 깔끔하게 정리(WebSocket·HTTP 서버 닫기) / graceful shutdown on termination signals
+let shuttingDown = false;
+function shutdown(signal) {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  console.log('\n' + signal + ' 수신 — 서버를 종료합니다 / shutting down...');
+  // 열린 WebSocket을 닫고(진행 중 작업은 socket close에서 취소됨) HTTP 서버를 닫는다
+  // close open sockets (in-flight tasks are cancelled on socket close), then the HTTP server
+  for (const client of wss.clients) {
+    try {
+      client.close();
+    } catch (err) {
+      // 개별 소켓 종료 실패는 무시 / ignore individual close failures
+    }
+  }
+  wss.close(() => {
+    server.close(() => process.exit(0));
+  });
+  // 정해진 시간 내 정상 종료가 안 되면 강제 종료 / force-exit if close hangs
+  setTimeout(() => process.exit(0), 3000).unref();
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
