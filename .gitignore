@@ -4,5 +4,8 @@ node_modules/
 .DS_Store
 custom-agents.json
 teams.json
+*.bak
+*.corrupt-*
 .omc/
 .playwright-mcp/
+av-title.png
