@@ -21,6 +21,10 @@
   const MAX_ROLE = 200; // 에이전트 역할 최대 길이 / max agent role length
   const MAX_MEMBER_ROLE = 120; // 팀 멤버 역할 최대 길이 / max team member role length
 
+  // 저장/삭제 응답이 끝내 오지 않아도 로딩 표시가 멈추지 않도록 자동 해제(초).
+  // Auto-clear the saving indicator after this many seconds so it never gets stuck waiting for a reply.
+  const SAVE_TIMEOUT = 6;
+
   // 기본 옵션(서버 응답 전 폴백) / default options before the server responds
   const DEFAULT_MODELS = ['opus', 'sonnet', 'haiku'];
   const DEFAULT_EXECUTIONS = ['sequential', 'parallel'];
@@ -45,6 +49,10 @@
     selected: 0,
     error: '',
     blink: 0,
+    confirmDelete: null, // 삭제 확인 대기 { id, name, tab } / pending delete confirmation
+    saving: false, // 저장/삭제 응답 대기 중 / awaiting a save/delete reply
+    savingLabel: '', // 로딩 표시 문구 / saving indicator text
+    savingTime: 0, // 로딩 표시 경과(자동 해제용) / elapsed saving time for auto-clear
     form: null,
     handlers: {}
   };
@@ -94,17 +102,8 @@
     if (inputEl) {
       return;
     }
-    inputEl = document.createElement('input');
-    inputEl.type = 'text';
-    inputEl.setAttribute('autocomplete', 'off');
-    inputEl.style.position = 'absolute';
-    inputEl.style.left = '0';
-    inputEl.style.top = '0';
-    inputEl.style.width = '1px';
-    inputEl.style.height = '1px';
-    inputEl.style.opacity = '0';
-    inputEl.style.pointerEvents = 'none';
-    document.body.appendChild(inputEl);
+    // 화면 밖 숨김 입력 생성(공용 유틸) / create the off-screen hidden input via the shared util
+    inputEl = window.UIUtil.createHiddenInput();
 
     // 텍스트 입력 → 현재 텍스트 항목 값 갱신 / typing updates the active text field
     inputEl.addEventListener('input', () => {
@@ -184,6 +183,8 @@
     ed.maxMembers = opts.maxMembers || DEFAULT_MAX_MEMBERS;
     ed.selected = 0;
     ed.error = '';
+    ed.confirmDelete = null;
+    clearSaving();
     ed.handlers = {
       onCreate: opts.onCreate || (() => {}),
       onUpdate: opts.onUpdate || (() => {}),
@@ -208,6 +209,20 @@
     return ed.open;
   }
 
+  // 로딩 표시 시작 / start the saving indicator
+  function beginSaving(label) {
+    ed.saving = true;
+    ed.savingLabel = label;
+    ed.savingTime = 0;
+  }
+
+  // 로딩 표시 해제 / clear the saving indicator
+  function clearSaving() {
+    ed.saving = false;
+    ed.savingLabel = '';
+    ed.savingTime = 0;
+  }
+
   // 선택 인덱스를 목록 범위로 클램프 / clamp selection into list range
   function clampSelected() {
     const len = currentList().length;
@@ -225,6 +240,7 @@
     if (models && models.length) {
       ed.models = models;
     }
+    clearSaving(); // 서버 응답 도착 → 로딩 종료 / server replied → stop the indicator
     clampSelected();
   }
 
@@ -243,6 +259,7 @@
     if (maxMembers) {
       ed.maxMembers = maxMembers;
     }
+    clearSaving(); // 서버 응답 도착 → 로딩 종료 / server replied → stop the indicator
     clampSelected();
   }
 
@@ -251,6 +268,7 @@
     ed.tab = ed.tab === 'agents' ? 'teams' : 'agents';
     ed.selected = 0;
     ed.error = '';
+    ed.confirmDelete = null;
   }
 
   // === 폼 필드 정의 / form field descriptors ===
@@ -426,6 +444,7 @@
     } else {
       ed.handlers.onCreate(fields);
     }
+    beginSaving('저장 중…');
     toList();
   }
 
@@ -437,6 +456,10 @@
     // 선택된 커스텀 에이전트들을 멤버로 / selected custom agents become the members
     const members = ed.form.memberIds.map((id) => ({ agentId: id }));
     if (!members.length) {
+      // 선택할 에이전트가 아예 없으면 에이전트 탭으로 안내(혼란 방지) / no agents to pick → point to the agent tab
+      if (!ed.agents.length) {
+        return failForm('먼저 [에이전트] 탭에서 에이전트를 만드세요', TEAM_TOGGLE_START);
+      }
       // 첫 멤버 토글 필드로 포커스 / focus the first member-toggle field
       return failForm('팀원으로 추가할 에이전트를 선택하세요 (Space / ←→)', TEAM_TOGGLE_START);
     }
@@ -452,6 +475,7 @@
     } else {
       ed.handlers.onTeamCreate(fields);
     }
+    beginSaving('저장 중…');
     toList();
   }
 
@@ -464,9 +488,35 @@
     focusInput();
   }
 
+  // 확인된 삭제를 실제로 수행 / perform a confirmed delete
+  function performConfirmedDelete() {
+    const c = ed.confirmDelete;
+    if (!c) {
+      return;
+    }
+    ed.confirmDelete = null;
+    if (c.tab === 'agents') {
+      ed.handlers.onDelete(c.id);
+    } else {
+      ed.handlers.onTeamDelete(c.id);
+    }
+    beginSaving('삭제 중…');
+  }
+
   // === 리스트 모드 전역 키 처리 / list-mode global key handling ===
   function handleGlobalKey(e) {
     if (ed.mode !== 'list') {
+      return;
+    }
+    // 삭제 확인 대기 중에는 확인(Enter)/취소(ESC)만 받는다 / while confirming a delete, accept only confirm or cancel
+    if (ed.confirmDelete) {
+      if (e.code === 'Enter' || e.code === 'NumpadEnter') {
+        e.preventDefault();
+        performConfirmedDelete();
+      } else if (e.code === 'Escape') {
+        e.preventDefault();
+        ed.confirmDelete = null;
+      }
       return;
     }
     switch (e.code) {
@@ -497,13 +547,11 @@
       case 'KeyX':
       case 'Delete':
       case 'Backspace': {
+        // 즉시 삭제 대신 확인 단계를 거친다(실수 방지) / require confirmation instead of deleting immediately
         const item = currentList()[ed.selected];
         if (item) {
-          if (ed.tab === 'agents') {
-            ed.handlers.onDelete(item.id);
-          } else {
-            ed.handlers.onTeamDelete(item.id);
-          }
+          ed.error = '';
+          ed.confirmDelete = { id: item.id, name: item.name, tab: ed.tab };
         }
         break;
       }
@@ -517,27 +565,23 @@
   }
 
   function update(dt) {
-    ed.blink += dt;
+    // 깜빡임 누적값을 되감아 장시간 후 정밀도 손실 방지 / wrap blink to avoid long-run precision loss
+    ed.blink = (ed.blink + dt) % window.UIUtil.BLINK_CYCLE;
+    // 응답이 오지 않아도 로딩 표시가 멈추지 않도록 자동 해제 / auto-clear saving so it never gets stuck
+    if (ed.saving) {
+      ed.savingTime += dt;
+      if (ed.savingTime > SAVE_TIMEOUT) {
+        clearSaving();
+      }
+    }
   }
 
   // === 렌더링 / rendering ===
 
-  // 폭에 맞춰 줄바꿈 / wrap text to a width
+  // 폭에 맞춰 줄바꿈 — 공용 유틸 위임(개행 없는 입력이라 결과 동일)
+  // wrap text to a width — delegated to the shared util (identical result for newline-free input)
   function wrap(ctx, text, maxW) {
-    const lines = [];
-    let cur = '';
-    for (const ch of text) {
-      const test = cur + ch;
-      if (ctx.measureText(test).width > maxW && cur) {
-        lines.push(cur);
-        cur = ch;
-      } else {
-        cur = test;
-      }
-    }
-    if (cur) {
-      lines.push(cur);
-    }
+    const lines = window.UIUtil.wrapText(ctx, text, maxW);
     return lines.length ? lines : [''];
   }
 
@@ -559,6 +603,16 @@
     ctx.fillStyle = '#FFD54F';
     ctx.font = 'bold 12px ' + FONT_FAMILY;
     ctx.fillText('에이전트 공방', PANEL.x + PAD, PANEL.y + 18);
+
+    // 저장/삭제 응답 대기 표시(제목 우측, 점 애니메이션) / saving indicator on the title row
+    if (ed.saving) {
+      const dots = '.'.repeat(Math.floor(ed.savingTime * 3) % 4);
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#AED581';
+      ctx.font = '10px ' + FONT_FAMILY;
+      ctx.fillText('⏳ ' + ed.savingLabel + dots, PANEL.x + PANEL.w - PAD, PANEL.y + 18);
+      ctx.textAlign = 'left';
+    }
 
     // 탭 바 / tab bar
     drawTabs(ctx);
@@ -679,9 +733,26 @@
   }
 
   function drawListHelp(ctx, text) {
+    // 삭제 확인 대기 중이면 도움말 대신 확인 프롬프트를 띄운다 / show the confirm prompt instead of help while awaiting confirmation
+    if (ed.confirmDelete) {
+      drawDeleteConfirm(ctx);
+      return;
+    }
     ctx.fillStyle = '#9E9E9E';
     ctx.font = '9px ' + FONT_FAMILY;
     ctx.fillText(text, PANEL.x + PAD, PANEL.y + PANEL.h - 10);
+  }
+
+  // 삭제 확인 프롬프트(되돌릴 수 없음 경고 + 키 안내) / delete confirmation prompt
+  function drawDeleteConfirm(ctx) {
+    const x = PANEL.x + PAD;
+    const kind = ed.confirmDelete.tab === 'agents' ? '에이전트' : '팀';
+    ctx.font = 'bold 10px ' + FONT_FAMILY;
+    ctx.fillStyle = '#EF9A9A';
+    ctx.fillText('⚠ ' + kind + ' "' + ed.confirmDelete.name + '" 삭제? — 되돌릴 수 없어요', x, PANEL.y + PANEL.h - 24);
+    ctx.font = '9px ' + FONT_FAMILY;
+    ctx.fillStyle = '#FFD54F';
+    ctx.fillText('[Enter] 삭제 확인     [ESC] 취소', x, PANEL.y + PANEL.h - 10);
   }
 
   // === 에이전트 폼 렌더 / agent form rendering ===
@@ -694,7 +765,7 @@
     y += 20;
 
     ctx.font = '11px ' + FONT_FAMILY;
-    const cursorOn = Math.floor(ed.blink * 2) % 2 === 0;
+    const cursorOn = window.UIUtil.cursorOn(ed.blink);
 
     // 이름 / name
     drawFieldLabel(ctx, x, y, '이름', ed.form.field === 0);
@@ -702,7 +773,8 @@
     y += LINE_H + 6;
 
     // 역할 / role (여러 줄 / multi-line)
-    drawFieldLabel(ctx, x, y, '역할', ed.form.field === 1);
+    // 길이 표시로 200자 상한과 잘림을 인지하게 함 / show length so the 200-char cap and clipping are visible
+    drawFieldLabel(ctx, x, y, '역할 (' + ed.form.role.length + '/' + MAX_ROLE + ')', ed.form.field === 1);
     const roleVal = ed.form.role + (ed.form.field === 1 && cursorOn ? '|' : '');
     const roleLines = wrap(ctx, roleVal || ' ', PANEL.w - PAD * 2 - 56);
     ctx.fillStyle = '#FFFFFF';
@@ -734,7 +806,7 @@
     y += 18;
 
     ctx.font = '11px ' + FONT_FAMILY;
-    const cursorOn = Math.floor(ed.blink * 2) % 2 === 0;
+    const cursorOn = window.UIUtil.cursorOn(ed.blink);
     const labelW = 64;
 
     // 0: 팀 이름 / team name
