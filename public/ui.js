@@ -22,6 +22,8 @@
   // 타이핑 속도(글자/초) — 빠름/보통/느림 / typing speeds (chars/sec)
   const SPEEDS = [80, 45, 25];
   const SPEED_LABELS = ['빠름', '보통', '느림'];
+  // 속도 변경 후 현재 속도를 잠깐 보여주는 시간(초) / how long to flash the speed label after a change
+  const SPEED_FLASH_DUR = 1.6;
 
   // 응답 대기(생각 중) 회전 문구 / rotating "thinking" phrases while awaiting a reply
   const THINKING_PHRASES = [
@@ -53,6 +55,7 @@
     streaming: false, // 스트리밍 중 / streaming in progress
     speedIndex: 1,
     blink: 0, // 커서/화살표 깜빡임 / cursor & arrow blink
+    speedFlash: 0, // 속도 변경 후 라벨 표시 잔여 시간 / remaining time to flash the speed label
     workTime: 0, // 응답 대기 경과 시간(생각중 문구 회전용) / elapsed waiting time for thinking phrases
     handlers: { onSubmit: null, onCancel: null },
     hint: '', // HUD 하단 힌트 / bottom HUD hint
@@ -68,19 +71,8 @@
     if (inputEl) {
       return;
     }
-    inputEl = document.createElement('input');
-    inputEl.type = 'text';
-    inputEl.setAttribute('autocomplete', 'off');
-    inputEl.style.position = 'absolute';
-    inputEl.style.left = '0';
-    inputEl.style.top = '0';
-    inputEl.style.width = '1px';
-    inputEl.style.height = '1px';
-    inputEl.style.opacity = '0';
-    inputEl.style.pointerEvents = 'none';
-    inputEl.style.border = 'none';
-    inputEl.style.background = 'transparent';
-    document.body.appendChild(inputEl);
+    // 화면 밖 숨김 입력 생성(공용 유틸) / create the off-screen hidden input via the shared util
+    inputEl = window.UIUtil.createHiddenInput();
 
     // 엔터=제출, ESC=취소 / Enter = submit, Escape = cancel
     inputEl.addEventListener('keydown', (e) => {
@@ -173,6 +165,7 @@
   // 타이핑 속도 순환 / cycle typing speed
   function cycleSpeed() {
     ui.speedIndex = (ui.speedIndex + 1) % SPEEDS.length;
+    ui.speedFlash = SPEED_FLASH_DUR; // 변경한 속도를 잠깐 표시 / briefly flash the new speed
   }
 
   function getMode() {
@@ -257,8 +250,12 @@
 
   // === 업데이트 / update ===
   function update(dt) {
-    ui.blink += dt;
+    // 깜빡임 누적값을 되감아 장시간 후 정밀도 손실 방지 / wrap blink to avoid long-run precision loss
+    ui.blink = (ui.blink + dt) % window.UIUtil.BLINK_CYCLE;
     ui.workTime += dt;
+    if (ui.speedFlash > 0) {
+      ui.speedFlash -= dt; // 속도 라벨 잔여 시간 감소 / decay the speed-label timer
+    }
     if (ui.mode === MODE.TEXT || ui.mode === MODE.WORKING) {
       if (ui.charProgress < ui.buffer.length) {
         ui.charProgress = Math.min(
@@ -271,30 +268,9 @@
 
   // === 텍스트 줄바꿈 / text wrapping ===
 
-  // 폭에 맞춰 줄바꿈(개행 및 글자 단위 폴백) / wrap by width (newlines + per-char fallback)
+  // 폭에 맞춰 줄바꿈 — 공용 유틸 위임 / wrap by width — delegated to the shared util
   function wrapText(ctx, text, maxWidth) {
-    const lines = [];
-    const paragraphs = text.split('\n');
-    for (const para of paragraphs) {
-      if (para === '') {
-        lines.push('');
-        continue;
-      }
-      let current = '';
-      for (const ch of para) {
-        const test = current + ch;
-        if (ctx.measureText(test).width > maxWidth && current !== '') {
-          lines.push(current);
-          current = ch;
-        } else {
-          current = test;
-        }
-      }
-      if (current !== '') {
-        lines.push(current);
-      }
-    }
-    return lines;
+    return window.UIUtil.wrapText(ctx, text, maxWidth);
   }
 
   // === 렌더링 / rendering ===
@@ -326,6 +302,15 @@
     ctx.strokeStyle = BORDER;
     ctx.lineWidth = 1;
     ctx.strokeRect(BOX.x + 0.5, BOX.y + 0.5, BOX.w - 1, BOX.h - 1);
+
+    // 속도 변경 직후 현재 타이핑 속도를 우상단에 잠깐 표시 / flash current typing speed at top-right
+    if (ui.speedFlash > 0) {
+      ctx.font = '9px ' + FONT_FAMILY;
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#FFD54F';
+      ctx.fillText('⌨ ' + SPEED_LABELS[ui.speedIndex], BOX.x + BOX.w - PAD, BOX.y + 12);
+      ctx.textAlign = 'left';
+    }
 
     // 화자 초상화(있으면 왼쪽에) → 텍스트 시작 위치를 오른쪽으로 / portrait on the left shifts text right
     const textLeft = BOX.x + PAD + (ui.portrait ? 36 : 0);
@@ -449,7 +434,7 @@
     }
 
     // 깜빡이는 커서 / blinking cursor
-    if (Math.floor(ui.blink * 2) % 2 === 0) {
+    if (window.UIUtil.cursorOn(ui.blink)) {
       const lastLine = lines.length ? lines[Math.min(lines.length, 4) - 1] : '▶ ';
       const cw = ctx.measureText(lastLine).width;
       const cy = startY + (Math.min(lines.length, 4) - 1) * LINE_H;
@@ -473,7 +458,7 @@
     }
 
     // 타이핑 완료 시 ▼ 표시(깜빡임) / blinking ▼ when typing is done
-    if (!isTyping() && Math.floor(ui.blink * 2) % 2 === 0) {
+    if (!isTyping() && window.UIUtil.cursorOn(ui.blink)) {
       ctx.fillStyle = '#FFFFFF';
       ctx.fillText('▼', ix, iy + 4);
     }
