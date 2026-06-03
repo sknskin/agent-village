@@ -11,13 +11,25 @@ const path = require('path');
 
 // AI 백엔드 모드: 'cli'(구독 인증, 추가비용 없음) | 'api'(API 키, 종량제)
 // AI backend mode: 'cli' (subscription auth, no extra cost) | 'api' (API key, metered)
-const AI_MODE = (process.env.AI_MODE || 'cli').toLowerCase();
+const VALID_AI_MODES = ['cli', 'api'];
+const RAW_AI_MODE = (process.env.AI_MODE || 'cli').toLowerCase();
+// 허용 목록에 없는 값은 안전하게 cli로 폴백 / unknown values fall back to cli
+const AI_MODE = VALID_AI_MODES.includes(RAW_AI_MODE) ? RAW_AI_MODE : 'cli';
+if (!VALID_AI_MODES.includes(RAW_AI_MODE)) {
+  console.error('알 수 없는 AI_MODE "' + RAW_AI_MODE + '" → cli로 폴백 / unknown AI_MODE, falling back to cli');
+}
 
 // claude 실행 파일 경로 / claude binary path
 const CLAUDE_BIN = process.env.CLAUDE_BIN || 'claude';
 
 // 단일 호출 최대 대기 시간(ms) / max wait per call
 const CALL_TIMEOUT_MS = 120000;
+
+// API 모드 응답 최대 토큰 수(매직넘버 분리) / max response tokens in API mode
+const API_MAX_TOKENS = 2048;
+
+// 작업 입력 최대 길이(과대 프롬프트 방지) / max task length to guard against oversized prompts
+const MAX_TASK_LEN = 4000;
 
 // 게임 작업 입력은 신뢰할 수 없으므로 모든 도구 차단 (순수 텍스트 응답만)
 // Game task input is untrusted, so block all tools (plain-text responses only)
@@ -414,9 +426,73 @@ function randomWorkingPhrase(agentId) {
 // 저장 파일 경로 / persistence file path
 const CUSTOM_FILE = path.join(__dirname, 'custom-agents.json');
 
+// 데이터 파일 백업/격리 접미사 / suffixes for backup & quarantine of data files
+const BACKUP_SUFFIX = '.bak';
+const CORRUPT_SUFFIX = '.corrupt-';
+
+// 손상된 데이터 파일을 삭제하지 않고 타임스탬프 사본으로 보존한다.
+// quarantine a corrupted data file (rename, never delete) so the bad data is recoverable
+function quarantineCorrupt(file) {
+  try {
+    const dest = file + CORRUPT_SUFFIX + Date.now();
+    fs.renameSync(file, dest);
+    console.error('손상 파일 보존 / preserved corrupted file as: ' + dest);
+  } catch (err) {
+    console.error('손상 파일 보존 실패 / failed to preserve corrupted file:', err.message);
+  }
+}
+
+// JSON 파일을 안전하게 읽는다 — 손상 시 .bak 복구를 시도하고 원본은 격리한다.
+// safely read a JSON file — on corruption, try the .bak then quarantine the bad original
+// 반환: 파싱된 객체, 또는 파일 없음/복구 불가 시 null / returns parsed object, or null when missing/unrecoverable
+function readJsonSafe(file) {
+  if (!fs.existsSync(file)) {
+    return null;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    console.error('데이터 파일 손상 / corrupted data file: ' + file + ' — ' + err.message);
+    const bak = file + BACKUP_SUFFIX;
+    if (fs.existsSync(bak)) {
+      try {
+        const bakText = fs.readFileSync(bak, 'utf8');
+        const data = JSON.parse(bakText);
+        // 손상 원본을 격리하고 백업본으로 파일을 복구한다 / quarantine the bad file and restore from backup
+        quarantineCorrupt(file);
+        fs.writeFileSync(file, bakText, 'utf8');
+        console.error('백업에서 복구됨 / restored from backup: ' + bak);
+        return data;
+      } catch (bakErr) {
+        console.error('백업도 손상 / backup also corrupted: ' + bak + ' — ' + bakErr.message);
+      }
+    }
+    // 복구 불가 — 손상 원본만 격리하고 빈 상태로 시작 / unrecoverable — quarantine the original and start empty
+    quarantineCorrupt(file);
+    return null;
+  }
+}
+
+// JSON을 저장하되 직전 정상본을 .bak으로 보존한다(다음 손상 시 복구원).
+// write JSON while keeping the previous good copy as .bak (the recovery source on a future corruption)
+function writeJsonSafe(file, data) {
+  const text = JSON.stringify(data, null, 2);
+  // 기존 정상 파일을 덮어쓰기 전에 백업으로 보존 / preserve the existing good file as a backup before overwrite
+  if (fs.existsSync(file)) {
+    try {
+      fs.copyFileSync(file, file + BACKUP_SUFFIX);
+    } catch (err) {
+      console.error('백업 생성 실패 / failed to create backup:', err.message);
+    }
+  }
+  fs.writeFileSync(file, text, 'utf8');
+}
+
 // 입력 길이 제한 / input length caps
+// 클라이언트 에디터(public/editor.js)의 MAX_NAME=20·MAX_ROLE=200과 동일하게 유지(정합성)
+// keep in sync with the client editor's MAX_NAME=20 / MAX_ROLE=200 for consistency
 const MAX_NAME_LEN = 20;
-const MAX_ROLE_LEN = 500;
+const MAX_ROLE_LEN = 200;
 
 // 커스텀 에이전트 기본 작업 말풍선 / default working phrases for custom agents
 const DEFAULT_WORKING_PHRASES = ['처리 중...', '작업 중...', '거의 다 됐어요', '정리 중...'];
@@ -475,10 +551,7 @@ function registerCustom(data) {
 // 파일에서 커스텀 에이전트 로드 / load custom agents from disk
 function loadCustomAgents() {
   try {
-    if (!fs.existsSync(CUSTOM_FILE)) {
-      return;
-    }
-    const raw = JSON.parse(fs.readFileSync(CUSTOM_FILE, 'utf8'));
+    const raw = readJsonSafe(CUSTOM_FILE);
     const stored = (raw && raw.agents) || {};
     for (const data of Object.values(stored)) {
       if (data && data.id) {
@@ -497,7 +570,7 @@ function saveCustomAgents() {
     for (const [id, a] of Object.entries(customAgents)) {
       out.agents[id] = { id, name: a.name, role: a.role, model: a.model, color: a.color };
     }
-    fs.writeFileSync(CUSTOM_FILE, JSON.stringify(out, null, 2), 'utf8');
+    writeJsonSafe(CUSTOM_FILE, out);
   } catch (err) {
     console.error('커스텀 에이전트 저장 실패 / failed to save custom agents:', err.message);
   }
@@ -544,6 +617,11 @@ function deleteCustomAgent(id) {
   }
   delete customAgents[id];
   saveCustomAgents();
+  // 삭제된 에이전트를 멤버로 가진 팀에서 제거(빈 팀은 함께 삭제)
+  // purge the deleted agent from every team (teams left empty are removed too)
+  // removeAgentFromTeams는 팀 섹션의 함수 선언으로 호이스팅되어 호출 시점엔 항상 사용 가능
+  // removeAgentFromTeams is a hoisted function declaration in the teams section, always available at call time
+  removeAgentFromTeams(id);
   return true;
 }
 
@@ -646,10 +724,7 @@ function registerTeam(data) {
 // 파일에서 팀 로드 / load teams from disk
 function loadTeams() {
   try {
-    if (!fs.existsSync(TEAMS_FILE)) {
-      return;
-    }
-    const raw = JSON.parse(fs.readFileSync(TEAMS_FILE, 'utf8'));
+    const raw = readJsonSafe(TEAMS_FILE);
     const stored = (raw && raw.teams) || {};
     for (const data of Object.values(stored)) {
       if (data && data.id) {
@@ -671,7 +746,7 @@ function saveTeams() {
         leadModel: t.leadModel, execution: t.execution, members: t.members
       };
     }
-    fs.writeFileSync(TEAMS_FILE, JSON.stringify(out, null, 2), 'utf8');
+    writeJsonSafe(TEAMS_FILE, out);
   } catch (err) {
     console.error('팀 저장 실패 / failed to save teams:', err.message);
   }
@@ -728,6 +803,28 @@ function deleteTeam(id) {
   delete teams[id];
   saveTeams();
   return true;
+}
+
+// 삭제된 커스텀 에이전트를 모든 팀에서 제거한다. 멤버가 0명이 된 팀은 함께 삭제.
+// Remove a deleted custom agent from every team; teams left with no members are deleted too.
+function removeAgentFromTeams(agentId) {
+  let changed = false;
+  for (const [teamId, team] of Object.entries(teams)) {
+    const kept = team.members.filter((m) => m.agentId !== agentId);
+    if (kept.length === team.members.length) {
+      continue; // 이 팀에는 해당 멤버가 없음 / this team has no such member
+    }
+    changed = true;
+    if (kept.length < MIN_TEAM_MEMBERS) {
+      // 멤버가 모두 사라진 팀은 삭제 / drop teams that would be left empty
+      delete teams[teamId];
+    } else {
+      team.members = kept;
+    }
+  }
+  if (changed) {
+    saveTeams();
+  }
 }
 
 // 클라이언트 편집용 팀 목록(멤버는 커스텀 에이전트 참조 + 표시용 이름)
@@ -792,6 +889,13 @@ function spawnClaude({ model, systemPrompt, task, onChunk }) {
       child.stdin.write(task);
       child.stdin.end();
     } catch (err) {
+      // stdin 쓰기 실패 시 자식 프로세스를 정리해 좀비 프로세스를 방지
+      // kill the child on stdin-write failure to avoid leaving a zombie process
+      try {
+        child.kill('SIGTERM');
+      } catch (killErr) {
+        // 종료 실패는 무시(이미 죽었을 수 있음) / ignore kill failure (it may already be dead)
+      }
       reject(new Error('프롬프트 전송 실패 / failed to write prompt: ' + err.message));
       return;
     }
@@ -902,7 +1006,8 @@ function spawnClaude({ model, systemPrompt, task, onChunk }) {
 // API 키 모드 호출 — @anthropic-ai/sdk가 설치돼 있어야 함
 // API key mode — requires @anthropic-ai/sdk to be installed
 function spawnViaApi({ model, systemPrompt, task, onChunk }) {
-  const state = { cancelled: false };
+  // stream을 추적해 취소/타임아웃 시 중단 / track the stream so cancel & timeout can abort it
+  const state = { cancelled: false, timedOut: false, stream: null };
 
   const promise = (async () => {
     let Anthropic;
@@ -916,17 +1021,30 @@ function spawnViaApi({ model, systemPrompt, task, onChunk }) {
     }
 
     // 별칭을 API 모델 ID로 매핑 / map aliases to API model IDs
+    // 미매핑 별칭은 임의 ID를 그대로 보내지 않고 기본 모델로 매핑 / unknown aliases map to the default model, never a raw passthrough
     const apiModelMap = { opus: 'claude-opus-4-8', sonnet: 'claude-sonnet-4-6', haiku: 'claude-haiku-4-5' };
-    const apiModel = apiModelMap[model] || model;
+    const apiModel = apiModelMap[model] || apiModelMap[DEFAULT_MODEL];
 
     const client = new Anthropic();
     let fullText = '';
     const stream = await client.messages.stream({
       model: apiModel,
-      max_tokens: 2048,
+      max_tokens: API_MAX_TOKENS,
       system: systemPrompt,
       messages: [{ role: 'user', content: task }]
     });
+    state.stream = stream;
+
+    // 타임아웃 가드(CLI 모드와 동일) — 멈춘 스트림이 영구 대기하지 않도록 중단
+    // timeout guard, matching CLI mode — abort a hung stream instead of waiting forever
+    const timer = setTimeout(() => {
+      state.timedOut = true;
+      try {
+        stream.abort();
+      } catch (err) {
+        // abort 실패는 무시(아래에서 타임아웃으로 처리) / ignore abort failure; handled below as timeout
+      }
+    }, CALL_TIMEOUT_MS);
 
     stream.on('text', (delta) => {
       if (state.cancelled) {
@@ -938,7 +1056,21 @@ function spawnViaApi({ model, systemPrompt, task, onChunk }) {
       }
     });
 
-    await stream.finalMessage();
+    try {
+      await stream.finalMessage();
+    } catch (err) {
+      // 취소/타임아웃에 의한 중단은 명확한 메시지로, 그 외는 원오류 전파
+      // abort due to cancel/timeout → clear message; otherwise rethrow the original error
+      if (state.timedOut) {
+        throw new Error('응답 시간 초과 / response timed out');
+      }
+      if (state.cancelled) {
+        throw new Error('작업 취소됨 / cancelled');
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
     if (state.cancelled) {
       throw new Error('작업 취소됨 / cancelled');
     }
@@ -947,6 +1079,13 @@ function spawnViaApi({ model, systemPrompt, task, onChunk }) {
 
   function cancel() {
     state.cancelled = true;
+    if (state.stream) {
+      try {
+        state.stream.abort();
+      } catch (err) {
+        // 이미 종료된 스트림 abort는 무시 / ignore abort on an already-finished stream
+      }
+    }
   }
 
   return { promise, cancel };
@@ -974,7 +1113,9 @@ function runAgentTask({ agentId, task, onChunk, onStatus, onDone, onError }) {
     return () => {};
   }
 
-  const cleanTask = (task || '').trim();
+  // 신뢰할 수 없는 입력이라 길이를 상한으로 자른다(과대 프롬프트 방지)
+  // untrusted input — clamp the length to guard against oversized prompts
+  const cleanTask = (task || '').trim().slice(0, MAX_TASK_LEN);
   if (!cleanTask) {
     onError('작업 내용이 비어 있습니다 / empty task');
     return () => {};
@@ -1113,6 +1254,7 @@ function runOrchestration({ task, onChunk, onStatus, onDone, onError }) {
 
       let accumulatedContext = '';
       const results = [];
+      let failed = 0; // 실패한 단계 수(정직한 완료 보고용) / number of failed steps (for honest completion reporting)
 
       for (let i = 0; i < tasks.length; i++) {
         if (state.cancelled) {
@@ -1148,6 +1290,7 @@ function runOrchestration({ task, onChunk, onStatus, onDone, onError }) {
           }
           onStatus(sub.id, 'idle');
           onChunk('\n⚠ ' + sub.name + ' 단계에서 오류: ' + err.message + '\n');
+          failed++;
           continue;
         }
 
@@ -1161,8 +1304,18 @@ function runOrchestration({ task, onChunk, onStatus, onDone, onError }) {
         return;
       }
 
+      // 모든 단계가 실패하면 거짓 "완료" 대신 오류로 보고 / report an error instead of a false "done" when every step failed
+      if (!results.length) {
+        onStatus(orchestrator.id, 'idle');
+        onError('모든 단계가 실패했습니다 / every step failed');
+        return;
+      }
+
       onStatus(orchestrator.id, 'done');
-      onChunk('\n✅ 모든 단계 완료!');
+      // 일부 단계가 실패했으면 완료 메시지에 명시 / note partial failures in the completion message
+      onChunk(failed > 0
+        ? '\n✅ ' + results.length + '개 단계 완료 (' + failed + '개 실패)'
+        : '\n✅ 모든 단계 완료!');
       onDone(orchestrator.id, results.join('\n\n'));
     } catch (err) {
       if (state.cancelled) {
@@ -1339,7 +1492,11 @@ function runTeamTask({ team, task, onChunk, onStatus, onDone, onError }) {
       }
 
       onStatus(team.id, 'done');
-      onChunk('\n\n✅ 팀 작업 완료!');
+      // 일부 팀원이 실패했으면 완료 메시지에 성공/전체 명수를 명시 / note success ratio when some members failed
+      const failedCount = roster.length - memberResults.length;
+      onChunk(failedCount > 0
+        ? '\n\n✅ 팀 작업 완료 (' + memberResults.length + '/' + roster.length + '명 성공)'
+        : '\n\n✅ 팀 작업 완료!');
       onDone(team.id, finalText);
     } catch (err) {
       if (state.cancelled) {
@@ -1373,5 +1530,11 @@ module.exports = {
   deleteTeam,
   randomGreeting,
   randomWorkingPhrase,
-  runAgentTask
+  runAgentTask,
+  // 순수 함수(테스트용 export) / pure helpers exported for tests
+  sanitizeModel,
+  sanitizeExecution,
+  parsePlan,
+  readJsonSafe,
+  writeJsonSafe
 };
