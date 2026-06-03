@@ -243,12 +243,17 @@
   // === 상태 갱신 / status updates ===
 
   function setAgentStatus(agentId, status) {
+    // 방에 있는 에이전트만 상태/강조 대상 — 오케스트레이터가 위임한 외부 서브에이전트(coder 등)가
+    // activeAgent를 가로채 방의 NPC 강조 링이 꺼지던 문제를 방지
+    // only agents present in the room get status/spotlight — prevents a delegated sub-agent
+    // (e.g. coder) from stealing activeAgent and turning off the room NPC's highlight ring
     if (Object.prototype.hasOwnProperty.call(scene.statuses, agentId)) {
       scene.statuses[agentId] = status;
-    }
-    scene.activeAgent = (status === 'working') ? agentId : scene.activeAgent;
-    if (status === 'idle' && scene.activeAgent === agentId) {
-      scene.activeAgent = null;
+      if (status === 'working') {
+        scene.activeAgent = agentId;
+      } else if (status === 'idle' && scene.activeAgent === agentId) {
+        scene.activeAgent = null;
+      }
     }
   }
 
