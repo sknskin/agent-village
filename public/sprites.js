@@ -94,11 +94,29 @@ window.AGENT_META = {
     snow: ['#ECEFF1', '#CFD8DC'], // 눈(설원) / snow
     ice: ['#B3E5FC', '#81D4FA'], // 얼음(설원) / ice
     deep_water: ['#1565C0', '#0D47A1'], // 깊은 물(해변) / deep water
-    cave_floor: ['#455A64', '#37474F'] // 동굴 바닥 / cave floor
+    cave_floor: ['#455A64', '#37474F'], // 동굴 바닥 / cave floor
+    cave_wall: ['#2B383F', '#1C262B'] // 동굴 바위벽(통과 불가, 어두움) / cave rock wall (solid, dark)
   };
 
+  // 물결 무늬(시간에 따라 두 위상 교차로 찰랑임) / animated ripples (two phases alternate over time)
+  function drawRipples(ctx, sx, sy, t, c1, c2) {
+    const ph = Math.floor((t || 0) / 30) % 2; // 약 0.5초 주기 / ~0.5s period
+    if (ph === 0) {
+      px(ctx, sx + 2, sy + 5, 5, 1, c1);
+      px(ctx, sx + 9, sy + 11, 4, 1, c1);
+      px(ctx, sx + 6, sy + 8, 3, 1, c2);
+      px(ctx, sx + 1, sy + 13, 3, 1, c1);
+    } else {
+      px(ctx, sx + 4, sy + 6, 5, 1, c1);
+      px(ctx, sx + 7, sy + 12, 4, 1, c1);
+      px(ctx, sx + 3, sy + 9, 3, 1, c2);
+      px(ctx, sx + 10, sy + 4, 3, 1, c1);
+    }
+  }
+
   // 타일 그리기 / draw a single ground tile
-  function drawTile(ctx, type, sx, sy) {
+  // t: 애니메이션 틱(물/얼음 찰랑임용, 없으면 정지) / animation tick for water/ice shimmer (omitted = static)
+  function drawTile(ctx, type, sx, sy, t) {
     switch (type) {
       case 'grass': {
         px(ctx, sx, sy, TILE, TILE, TILE_COLORS.grass[0]);
@@ -125,11 +143,8 @@ window.AGENT_META = {
       }
       case 'water': {
         px(ctx, sx, sy, TILE, TILE, TILE_COLORS.water[0]);
-        // 잔물결 / ripples
-        px(ctx, sx + 2, sy + 5, 5, 1, TILE_COLORS.water[1]);
-        px(ctx, sx + 9, sy + 11, 4, 1, TILE_COLORS.water[1]);
-        px(ctx, sx + 6, sy + 8, 3, 1, '#81D4FA');
-        px(ctx, sx + 1, sy + 13, 3, 1, TILE_COLORS.water[1]);
+        // 잔물결(애니메이션) / animated ripples
+        drawRipples(ctx, sx, sy, t, TILE_COLORS.water[1], '#81D4FA');
         break;
       }
       case 'flowers': {
@@ -166,12 +181,15 @@ window.AGENT_META = {
         px(ctx, sx + 2, sy + 3, 6, 1, '#E1F5FE');
         px(ctx, sx + 8, sy + 9, 5, 1, TILE_COLORS.ice[1]);
         px(ctx, sx + 4, sy + 11, 3, 1, '#E1F5FE');
+        // 미끄러지는 반짝임 / a glint that slides across
+        const gx = Math.floor((t || 0) / 10) % (TILE - 2);
+        px(ctx, sx + 1 + gx, sy + 2, 1, 1, '#FFFFFF');
         break;
       }
       case 'deep_water': {
         px(ctx, sx, sy, TILE, TILE, TILE_COLORS.deep_water[0]);
-        px(ctx, sx + 2, sy + 6, 5, 1, TILE_COLORS.deep_water[1]);
-        px(ctx, sx + 9, sy + 11, 4, 1, '#1976D2');
+        // 깊은 물 잔물결(애니메이션) / animated deep-water ripples
+        drawRipples(ctx, sx, sy, t, TILE_COLORS.deep_water[1], '#1976D2');
         break;
       }
       case 'cave_floor': {
@@ -179,6 +197,16 @@ window.AGENT_META = {
         px(ctx, sx + 4, sy + 6, 3, 2, TILE_COLORS.cave_floor[1]);
         px(ctx, sx + 10, sy + 11, 2, 2, '#263238');
         px(ctx, sx + 2, sy + 12, 1, 1, '#546E7A');
+        break;
+      }
+      case 'cave_wall': {
+        // 거친 바위벽 — 어두운 바탕 + 균열/돌결 / rough rock wall: dark base + cracks & facets
+        px(ctx, sx, sy, TILE, TILE, TILE_COLORS.cave_wall[0]);
+        px(ctx, sx, sy, TILE, 2, '#3A4A52'); // 상단 하이라이트 / top facet highlight
+        px(ctx, sx + 2, sy + 4, 4, 3, TILE_COLORS.cave_wall[1]); // 음영 덩어리 / shadow chunk
+        px(ctx, sx + 9, sy + 8, 4, 4, TILE_COLORS.cave_wall[1]);
+        px(ctx, sx + 6, sy + 2, 1, 6, '#10171B'); // 균열 / crack
+        px(ctx, sx + 11, sy + 3, 1, 1, '#546E7A'); // 광물 반짝 / mineral fleck
         break;
       }
       default: {
@@ -374,9 +402,17 @@ window.AGENT_META = {
     orchestrator: { body: '#FFD54F', hair: '#F57F17', accent: '#E65100' }
   };
 
+  // 이동 중 다리 좌우 스트라이드 값(세로 흔들림 아님) / horizontal leg stride while moving (not a vertical bob)
+  // frame이 진행될 때 ±1px로만 번갈아 → 자연스러운 걸음, 과한 들썩임 없음
+  // alternates ±1px as the frame advances → natural gait without bouncing
+  function legStride(frame, moving) {
+    return moving ? ((Math.floor(frame / 8) % 2 === 0) ? 1 : -1) : 0;
+  }
+
   // NPC 그리기 / draw an NPC agent
   // status: 'idle' | 'working' | 'done', color: 커스텀/마스터용 색상 / color for custom/master NPCs
-  function drawNPC(ctx, agentId, sx, sy, frame, status, color) {
+  // moving: 이동 중이면 다리 스트라이드 애니메이션(기본 false=정지) / animate legs when moving
+  function drawNPC(ctx, agentId, sx, sy, frame, status, color, moving) {
     // 빌트인은 고유 팔레트, 그 외엔 전달된 색으로 팔레트 구성
     // built-ins use their palette; otherwise derive one from the given color
     const style = NPC_STYLE[agentId] || { body: color || '#90A4AE', hair: '#37474F', accent: '#263238' };
@@ -385,9 +421,10 @@ window.AGENT_META = {
     // 위아래 흔들림 없음(요청) / no vertical bob (per request)
     const y = sy;
 
-    // 다리 / legs
-    px(ctx, sx + 4, y + 12, 3, 4, style.accent);
-    px(ctx, sx + 9, y + 12, 3, 4, style.accent);
+    // 다리 — 이동 중에는 좌우로 번갈아 내딛음(세로 흔들림 없음) / legs stride horizontally when moving
+    const sw = legStride(frame, moving);
+    px(ctx, sx + 4 - sw, y + 12, 3, 4, style.accent);
+    px(ctx, sx + 9 + sw, y + 12, 3, 4, style.accent);
     // 로브/몸 / robe body
     px(ctx, sx + 2, y + 6, 12, 8, style.body);
     px(ctx, sx + 2, y + 13, 12, 1, style.accent);
@@ -600,6 +637,45 @@ window.AGENT_META = {
     px(ctx, sx + 9, sy + 9, 1, 3, '#FF8A65');
   }
 
+  // 나무 그루터기(숲, 충돌) / tree stump (forest, collidable)
+  function drawStump(ctx, sx, sy) {
+    px(ctx, sx + 4, sy + 10, 8, 5, '#6D4C41'); // 밑동 / base
+    px(ctx, sx + 4, sy + 8, 8, 3, '#8D6E63'); // 윗면 / top surface
+    px(ctx, sx + 6, sy + 9, 4, 1, '#A1887F'); // 나이테 / growth rings
+    px(ctx, sx + 7, sy + 9, 1, 1, '#5D4037');
+    px(ctx, sx + 3, sy + 13, 2, 2, '#5D4037'); // 뿌리 / roots
+    px(ctx, sx + 11, sy + 13, 2, 2, '#5D4037');
+  }
+
+  // 유목(해변, 평면) / driftwood (beach, flat)
+  function drawDriftwood(ctx, sx, sy) {
+    px(ctx, sx + 1, sy + 9, 14, 3, '#A1887F'); // 통나무 / log
+    px(ctx, sx + 1, sy + 9, 14, 1, '#C8B89E'); // 바랜 윗면 / bleached top
+    px(ctx, sx + 4, sy + 10, 1, 1, '#8D6E63'); // 옹이 / knots
+    px(ctx, sx + 10, sy + 10, 1, 1, '#8D6E63');
+    px(ctx, sx + 14, sy + 8, 2, 2, '#B0A089'); // 부러진 가지 / broken branch
+  }
+
+  // 고드름/얼음 기둥(설원, 충돌) / icicle spikes (snowfield, collidable)
+  function drawIcicle(ctx, sx, sy) {
+    px(ctx, sx + 4, sy + 6, 3, 9, '#B3E5FC'); // 큰 기둥 / large spike
+    px(ctx, sx + 5, sy + 6, 1, 11, '#E1F5FE'); // 하이라이트 / highlight
+    px(ctx, sx + 9, sy + 8, 2, 6, '#81D4FA'); // 작은 기둥 / small spike
+    px(ctx, sx + 4, sy + 5, 7, 2, '#E1F5FE'); // 윗쪽 눈/얼음 / icy cap
+    px(ctx, sx + 5, sy + 14, 1, 1, '#FFFFFF'); // 끝 반짝 / tip sparkle
+  }
+
+  // 불가사리(해변, 평면) / starfish (beach, flat)
+  function drawStarfish(ctx, sx, sy) {
+    const c = '#FF8A65';
+    px(ctx, sx + 7, sy + 7, 2, 7, c); // 세로 팔 / vertical arms
+    px(ctx, sx + 4, sy + 10, 8, 2, c); // 가로 팔 / horizontal arms
+    px(ctx, sx + 6, sy + 8, 4, 4, '#FF7043'); // 중심 / center
+    px(ctx, sx + 7, sy + 9, 1, 1, '#FFCCBC'); // 점 / dot
+    px(ctx, sx + 5, sy + 13, 1, 1, c); // 아래 팔 끝 / lower arm tips
+    px(ctx, sx + 10, sy + 13, 1, 1, c);
+  }
+
   // 등대(해변, 위로 솟음) / lighthouse (beach, draws upward)
   function drawLighthouse(ctx, sx, sy) {
     px(ctx, sx + 4, sy - 6, 8, 22, '#FAFAFA'); // 몸체 / tower
@@ -633,9 +709,10 @@ window.AGENT_META = {
   }
 
   // 길고양이 / stray cat
-  function drawCat(ctx, sx, sy, frame, color) {
+  function drawCat(ctx, sx, sy, frame, color, moving) {
     const c = color || '#90A4AE';
     const y = sy; // 위아래 흔들림 없음 / no vertical bob
+    const sw = legStride(frame, moving); // 이동 중 다리 스트라이드 / leg stride while moving
     px(ctx, sx + 3, y + 9, 9, 5, c); // 몸 / body
     px(ctx, sx + 8, y + 6, 5, 5, c); // 머리 / head
     px(ctx, sx + 8, y + 4, 2, 2, c); // 귀 / ears
@@ -643,26 +720,28 @@ window.AGENT_META = {
     px(ctx, sx + 2, y + 7, 2, 5, c); // 꼬리 / tail
     px(ctx, sx + 9, y + 8, 1, 1, '#000000'); // 눈 / eyes
     px(ctx, sx + 11, y + 8, 1, 1, '#000000');
-    px(ctx, sx + 4, y + 14, 2, 2, '#78909C'); // 다리 / legs
-    px(ctx, sx + 9, y + 14, 2, 2, '#78909C');
+    px(ctx, sx + 4 - sw, y + 14, 2, 2, '#78909C'); // 다리 / legs
+    px(ctx, sx + 9 + sw, y + 14, 2, 2, '#78909C');
   }
 
   // 펭귄 / penguin
-  function drawPenguin(ctx, sx, sy, frame) {
+  function drawPenguin(ctx, sx, sy, frame, moving) {
     const y = sy; // 위아래 흔들림 없음 / no vertical bob
+    const sw = legStride(frame, moving); // 이동 중 발 스트라이드 / foot stride while moving
     px(ctx, sx + 4, y + 4, 8, 12, '#37474F'); // 몸 / body
     px(ctx, sx + 6, y + 7, 4, 8, '#ECEFF1'); // 배 / belly
     px(ctx, sx + 7, y + 6, 2, 2, '#FB8C00'); // 부리 / beak
     px(ctx, sx + 6, y + 5, 1, 1, '#000000'); // 눈 / eyes
     px(ctx, sx + 9, y + 5, 1, 1, '#000000');
-    px(ctx, sx + 5, y + 16, 2, 1, '#FB8C00'); // 발 / feet
-    px(ctx, sx + 9, y + 16, 2, 1, '#FB8C00');
+    px(ctx, sx + 5 - sw, y + 16, 2, 1, '#FB8C00'); // 발 / feet
+    px(ctx, sx + 9 + sw, y + 16, 2, 1, '#FB8C00');
   }
 
   // 강아지 / dog
-  function drawDog(ctx, sx, sy, frame, color) {
+  function drawDog(ctx, sx, sy, frame, color, moving) {
     const c = color || '#D7CCC8';
     const y = sy; // 위아래 흔들림 없음 / no vertical bob
+    const sw = legStride(frame, moving); // 이동 중 다리 스트라이드 / leg stride while moving
     px(ctx, sx + 3, y + 9, 9, 4, c); // 몸 / body
     px(ctx, sx + 9, y + 6, 5, 5, c); // 머리 / head
     px(ctx, sx + 9, y + 4, 2, 3, c); // 귀 / ears
@@ -671,14 +750,15 @@ window.AGENT_META = {
     px(ctx, sx + 11, y + 8, 1, 1, '#000000'); // 눈 / eyes
     px(ctx, sx + 13, y + 8, 1, 1, '#000000');
     px(ctx, sx + 12, y + 10, 2, 1, '#3E2723'); // 코 / nose
-    px(ctx, sx + 4, y + 13, 2, 3, '#8D6E63'); // 다리 / legs
-    px(ctx, sx + 9, y + 13, 2, 3, '#8D6E63');
+    px(ctx, sx + 4 - sw, y + 13, 2, 3, '#8D6E63'); // 다리 / legs
+    px(ctx, sx + 9 + sw, y + 13, 2, 3, '#8D6E63');
   }
 
   // 눈토끼 / snow rabbit
-  function drawRabbit(ctx, sx, sy, frame, color) {
+  function drawRabbit(ctx, sx, sy, frame, color, moving) {
     const c = color || '#ECEFF1';
     const y = sy; // 위아래 흔들림 없음 / no vertical bob
+    const sw = legStride(frame, moving); // 이동 중 발 스트라이드 / foot stride while moving
     px(ctx, sx + 5, y + 9, 6, 6, c); // 몸 / body
     px(ctx, sx + 6, y + 5, 5, 5, c); // 머리 / head
     px(ctx, sx + 6, y + 1, 2, 5, c); // 귀 / ears
@@ -686,8 +766,8 @@ window.AGENT_META = {
     px(ctx, sx + 7, y + 7, 1, 1, '#E57373'); // 눈(분홍) / pink eyes
     px(ctx, sx + 9, y + 7, 1, 1, '#E57373');
     px(ctx, sx + 11, y + 11, 2, 2, c); // 꼬리 / tail
-    px(ctx, sx + 5, y + 15, 2, 1, '#BDBDBD'); // 발 / feet
-    px(ctx, sx + 9, y + 15, 2, 1, '#BDBDBD');
+    px(ctx, sx + 5 - sw, y + 15, 2, 1, '#BDBDBD'); // 발 / feet
+    px(ctx, sx + 9 + sw, y + 15, 2, 1, '#BDBDBD');
   }
 
   // 바닥 그림자(깊이감) / ground shadow for depth
@@ -732,6 +812,10 @@ window.AGENT_META = {
     drawCrystal,
     drawStalagmite,
     drawShell,
+    drawStump,
+    drawDriftwood,
+    drawIcicle,
+    drawStarfish,
     drawLighthouse,
     drawSpiritTree,
     drawBottle,
